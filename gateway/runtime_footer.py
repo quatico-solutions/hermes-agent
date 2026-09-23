@@ -88,6 +88,60 @@ def resolve_footer_config(
     return resolved
 
 
+_LEDGER_FIELDS = frozenset({"calls", "tokens", "cost"})
+
+
+def _human(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def session_ledger(session_id: Optional[str], db_path: Optional[str]) -> Optional[dict]:
+    """Whole-session usage totals from ``session_model_usage``, or None.
+
+    Reads the LEDGER, not the agent's in-memory counters. ``session_*`` on the
+    agent start at 0.0 when the agent object is created and are never restored
+    from the DB, so after a gateway restart or a cache eviction they mean "since
+    this process picked the session up" — a window mislabelled as a session
+    total, which is precisely the class of wrong footer this feature exists to
+    replace. The ledger is keyed by session and spans every task (main loop,
+    approval, compression, title generation, background review), and the agent
+    flushes its queued token deltas at turn finalize, before the gateway builds
+    this footer.
+
+    It is still a FLOOR for the current turn: a background review is spawned
+    after the final response, so its cost lands in the next turn's footer.
+
+    Read-only URI connection — the gateway owns the writer; WAL permits readers.
+    Any failure returns None and the ledger fields are skipped silently, same as
+    every other field whose data is missing.
+    """
+    if not session_id or not db_path:
+        return None
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            row = con.execute(
+                "SELECT COALESCE(SUM(api_call_count),0),"
+                " COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens),0),"
+                " COALESCE(SUM(output_tokens),0),"
+                " COALESCE(SUM(estimated_cost_usd),0)"
+                " FROM session_model_usage WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return {"calls": int(row[0]), "in": int(row[1]), "out": int(row[2]), "cost": float(row[3])}
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
@@ -95,6 +149,7 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    ledger: Optional[dict] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -115,6 +170,14 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "calls" and ledger:
+            parts.append(f"{ledger['calls']} calls")
+        elif field == "tokens" and ledger:
+            parts.append(f"{_human(ledger['in'])} in / {_human(ledger['out'])} out")
+        elif field == "cost" and ledger:
+            # ">=" because a background review spawned after this reply is not
+            # yet in the ledger; it shows up in the next turn's footer.
+            parts.append(f"≥${ledger['cost']:.2f}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +193,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    session_id: Optional[str] = None,
+    db_path: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -140,10 +205,14 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    fields = cfg.get("fields") or _DEFAULT_FIELDS
+    ledger = (session_ledger(session_id, db_path)
+              if any(f in _LEDGER_FIELDS for f in fields) else None)
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
-        fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        fields=fields,
+        ledger=ledger,
     )
