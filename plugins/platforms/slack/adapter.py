@@ -852,6 +852,30 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
     return name.startswith("audio_message")
 
 
+# Slack renders the assistant status line to roughly 50 characters before
+# truncating it; agent.display.build_status_phrase() caps its phrases at 49
+# for the same reason. The elapsed suffix has to fit inside that budget.
+_STATUS_LINE_MAX = 50
+
+
+def _status_with_elapsed(phrase: str, human: str) -> str:
+    """Append the elapsed-time heartbeat to a live status phrase.
+
+    Keeps BOTH signals on one line — what the agent last started doing, and
+    how long the turn has been running ("is running pytest… (2m03s)"). The
+    phrase is trimmed rather than the suffix: the suffix is the liveness
+    signal (#45702) and losing it is what makes a turn read as wedged.
+    """
+    suffix = f" ({human})"
+    budget = _STATUS_LINE_MAX - len(suffix)
+    if budget < 8:
+        # Pathological elapsed string — keep the informative phrase.
+        return phrase
+    if len(phrase) <= budget:
+        return f"{phrase}{suffix}"
+    return f"{phrase[: budget - 1].rstrip(' .…')}…{suffix}"
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -2913,26 +2937,34 @@ class SlackAdapter(BasePlatformAdapter):
                 for old_key in oldest:
                     self._active_status_threads.pop(old_key, None)
         try:
-            _status = (
-                getattr(self, "_status_text", {}).get(str(chat_id))
-                or getattr(self.config, "typing_status_text", None)
+            # The gateway's live phrase is STICKY: it is set on tool.started
+            # and no longer cleared on tool.completed, so the most recent tool
+            # stays on the status line through the model's thinking gap
+            # instead of the line reverting to a generic label. It is dropped
+            # for real when the turn ends (_keep_typing teardown clears
+            # _status_text).
+            _live_phrase = getattr(self, "_status_text", {}).get(str(chat_id))
+            _status = _live_phrase or getattr(self.config, "typing_status_text", None)
+            _elapsed = (
+                int(time.monotonic() - _status_started)
+                if _status_started is not None
+                else 0
             )
+            _human = ""
+            if _elapsed >= 30:
+                _mins, _secs = divmod(_elapsed, 60)
+                _human = f"{_mins}m{_secs:02d}s" if _mins else f"{_secs}s"
             if not _status:
                 # Heartbeat (#45702): once a turn has run for 30s+, replace
-                # the static default with visible elapsed progress. Only the
-                # fallback label changes — explicit live-status phrases and
-                # configured typing_status_text always win.
-                _elapsed = (
-                    int(time.monotonic() - _status_started)
-                    if _status_started is not None
-                    else 0
-                )
-                if _elapsed >= 30:
-                    _mins, _secs = divmod(_elapsed, 60)
-                    _human = f"{_mins}m{_secs:02d}s" if _mins else f"{_secs}s"
-                    _status = f"still working… ({_human})"
-                else:
-                    _status = "is thinking..."
+                # the static default with visible elapsed progress.
+                _status = f"still working… ({_human})" if _human else "is thinking..."
+            elif _live_phrase and _human:
+                # Heartbeat (#45702) on top of the sticky phrase rather than
+                # instead of it: "is reading docs/api.md… (2m03s)" says both
+                # what the agent last did and that the turn is still alive.
+                # A configured typing_status_text is left verbatim — that is
+                # the operator's wording, not ours to decorate.
+                _status = _status_with_elapsed(_live_phrase, _human)
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,

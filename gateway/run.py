@@ -3386,10 +3386,18 @@ class TurnRunner:
                         args if ctx._live_status_mode == "full" else None,
                     )
                     ctx._live_status_adapter.set_status_text(ctx.source.chat_id, _phrase)
-                elif event_type == "tool.completed":
-                    # Between tools the model is genuinely "thinking"
-                    # again — revert to the static default.
-                    ctx._live_status_adapter.set_status_text(ctx.source.chat_id, None)
+                # tool.completed deliberately does NOT clear the phrase: the
+                # last tool's phrase is STICKY until the next tool.started
+                # overwrites it or the turn ends (_keep_typing drops
+                # _status_text in its teardown). Clearing here reverted the
+                # status line to the generic fallback for the whole inter-tool
+                # gap — and with a model whose per-call latency runs to tens of
+                # seconds, that gap IS most of the turn: one measured turn
+                # rendered 12x "is thinking..." plus ~20x "still working… (…)"
+                # against only 13 informative phrases. The elapsed-time
+                # heartbeat (#45702) is not lost — the adapter now appends it
+                # to the sticky phrase ("is running pytest… (2m03s)") instead
+                # of replacing it.
             except Exception as _ls_err:
                 logger.debug("live status update failed: %s", _ls_err)
         # "log" mode: append tool.started lines to the log queue and stay
@@ -23282,6 +23290,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _live_status_adapter = None
         if _live_status_mode == "off":
             _live_status_adapter = None
+        if _live_status_adapter is not None:
+            # Phrases are sticky for the whole turn now, so start every turn
+            # from a clean slate. _keep_typing's teardown already drops
+            # _status_text, but a typing loop that dies without running its
+            # finally would otherwise leak the PREVIOUS turn's last tool
+            # phrase into this turn's first status refresh.
+            try:
+                _live_status_adapter.set_status_text(source.chat_id, None)
+            except Exception as _ls_reset_err:  # noqa: BLE001 - cosmetic only
+                logger.debug("live status reset failed: %s", _ls_reset_err)
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
         log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
