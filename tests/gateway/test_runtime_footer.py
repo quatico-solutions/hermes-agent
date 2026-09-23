@@ -133,3 +133,19 @@ def test_build_footer_per_platform_off_suppresses():
     assert out == ""
 
 
+
+
+def test_template_wraps_footer_per_platform():
+    from gateway.runtime_footer import build_footer_line
+    cfg = {"display": {"runtime_footer": {"enabled": True, "fields": ["model", "context_pct"]},
+                       "platforms": {"slack": {"runtime_footer": {"template": "↳ _{footer}_"}}}}}
+    kw = dict(model="openai/gpt-5.4", context_tokens=50, context_length=100)
+    assert build_footer_line(user_config=cfg, platform_key="slack", **kw) == "↳ _gpt-5.4 · 50%_"
+    assert build_footer_line(user_config=cfg, platform_key="cli", **kw) == "gpt-5.4 · 50%"
+
+
+def test_template_without_placeholder_or_empty_line_is_ignored():
+    from gateway.runtime_footer import apply_footer_template
+    assert apply_footer_template("gpt-5.4", "no placeholder") == "gpt-5.4"
+    assert apply_footer_template("", "↳ _{footer}_") == ""
+    assert apply_footer_template("a{b}", "{x} {footer}") == "{x} a{b}"

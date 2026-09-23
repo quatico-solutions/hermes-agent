@@ -64,7 +64,7 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "template": ""}
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -73,6 +73,8 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        if isinstance(global_cfg.get("template"), str):
+            resolved["template"] = global_cfg["template"]
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -84,6 +86,8 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                if isinstance(plat_footer.get("template"), str):
+                    resolved["template"] = plat_footer["template"]
 
     return resolved
 
@@ -208,7 +212,7 @@ def build_footer_line(
     fields = cfg.get("fields") or _DEFAULT_FIELDS
     ledger = (session_ledger(session_id, db_path)
               if any(f in _LEDGER_FIELDS for f in fields) else None)
-    return format_runtime_footer(
+    line = format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
@@ -216,3 +220,17 @@ def build_footer_line(
         fields=fields,
         ledger=ledger,
     )
+    return apply_footer_template(line, cfg.get("template"))
+
+
+def apply_footer_template(line: str, template: Optional[str]) -> str:
+    """Wrap the footer line in ``template``, where ``{footer}`` marks the line.
+
+    Lets a platform style the footer in its own markup, e.g. Slack
+    ``"↳ _{footer}_"`` for a marker plus italics. A template without
+    ``{footer}`` is ignored rather than allowed to drop the data; plain
+    ``str.replace`` so other braces in the template need no escaping.
+    """
+    if not line or not template or "{footer}" not in template:
+        return line
+    return template.replace("{footer}", line)
