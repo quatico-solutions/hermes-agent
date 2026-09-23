@@ -263,6 +263,7 @@ class GatewayTurnPersistenceMixin:
         the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
+        from hermes_constants import get_hermes_home
         # A bot peer gets the model's words only: a streamed reply sends the footer as its own message.
         if finite_turn_required() is True or not automatic_notices_allowed(source):
             return ""
@@ -276,6 +277,8 @@ class GatewayTurnPersistenceMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                session_id=agent_result.get("session_id"),
+                db_path=str(get_hermes_home() / "state.db"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
