@@ -2963,6 +2963,13 @@ class GatewayTurnMixin:
         _live_status_adapter = (
             adapter if getattr(adapter, "supports_status_text", False) and _live_status_mode != "off" else None
         )
+        if _live_status_adapter is not None:
+            # Phrases are sticky for the whole turn, so start each turn clean: a typing loop that died
+            # without its teardown would otherwise leak the previous turn's last phrase into this one.
+            try:
+                _live_status_adapter.set_status_text(source.chat_id, None)
+            except Exception as _ls_reset_err:  # noqa: BLE001 - cosmetic only
+                logger.debug("live status reset failed: %s", _ls_reset_err)
         # "log" mode: tool calls go to ~/.hermes/logs/tool_calls.log instead of the chat. Gateway-only.
         log_mode_enabled = progress_mode == "log" and not is_webhook
         # Interim assistant messages and thinking_progress are independent of tool progress (same

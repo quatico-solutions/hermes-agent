@@ -205,9 +205,11 @@ class TurnRunner:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
                 adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
-            elif event_type == "tool.completed":
-                # Between tools the model is genuinely "thinking" again — revert to the static default.
-                adapter.set_status_text(ctx.source.chat_id, None)
+            # tool.completed deliberately does NOT clear the phrase: it stays until the next
+            # tool.started overwrites it or the turn ends (_keep_typing teardown drops _status_text).
+            # With tens of seconds per model call, the inter-tool gap is most of the turn; clearing
+            # here made the line read "is thinking..." / "still working…" nearly all the time. The
+            # elapsed heartbeat (#45702) is kept: the Slack adapter appends it to the phrase.
         except Exception as err:
             logger.debug("live status update failed: %s", err)
 

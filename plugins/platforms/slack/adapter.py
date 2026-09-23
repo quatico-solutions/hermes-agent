@@ -989,6 +989,27 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
+# Slack truncates the assistant status line at roughly 50 characters (build_status_phrase() caps
+# its phrases at 49 for the same reason), so the elapsed suffix has to fit inside that budget.
+_STATUS_LINE_MAX = 50
+
+
+def _status_with_elapsed(phrase: str, started: Optional[float]) -> str:
+    """Append elapsed time (after 30s) to a live status phrase, trimming the phrase, not the
+    suffix: the suffix is the liveness signal, and without it a long turn reads as wedged."""
+    elapsed = int(time.monotonic() - started) if started is not None else 0
+    if elapsed < 30:
+        return phrase
+    mins, secs = divmod(elapsed, 60)
+    suffix = f" ({mins}m{secs:02d}s)" if mins else f" ({secs}s)"
+    budget = _STATUS_LINE_MAX - len(suffix)
+    if budget < 8:
+        return phrase
+    if len(phrase) <= budget:
+        return f"{phrase}{suffix}"
+    return f"{phrase[: budget - 1].rstrip(' .…')}…{suffix}"
+
+
 class SlackAdapter(BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
@@ -2608,9 +2629,14 @@ class SlackAdapter(BasePlatformAdapter):
             self._evict_oldest_by_ts(
                 self._active_status_threads, self._ACTIVE_STATUS_THREADS_MAX, lambda k: k[2])
         # May lack assistant:write scope or assistant context; reactions still work.
-        _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
-            self.config, "typing_status_text", None)
-        _status = _status or self._default_status_text(_status_started)
+        _live_phrase = getattr(self, "_status_text", {}).get(str(chat_id))
+        _status = _live_phrase or getattr(self.config, "typing_status_text", None)
+        if not _status:
+            _status = self._default_status_text(_status_started)
+        elif _live_phrase:
+            # Heartbeat (#45702) on top of the sticky tool phrase rather than instead of it:
+            # "is reading docs/api.md… (2m03s)". A configured typing_status_text stays verbatim.
+            _status = _status_with_elapsed(_live_phrase, _status_started)
         await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
 
     async def _set_thread_status(
