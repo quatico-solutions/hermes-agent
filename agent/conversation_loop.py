@@ -3285,6 +3285,65 @@ def run_conversation(
                                 "Token persistence failed (session=%s, tokens=%d): %s",
                                 agent.session_id, total_tokens, e,
                             )
+                    elif getattr(agent, "_usage_task", "") and agent.session_id:
+                        # Persistence-isolated fork (background review): its
+                        # _session_db is deliberately None so it cannot write
+                        # its harness turn into the user's real session -- but
+                        # that also silenced the branch above, making every one
+                        # of the fork's main-loop API calls invisible to
+                        # session_model_usage and to every cost report derived
+                        # from it (measured 2026-09-18: 22% of a day's spend).
+                        # Record the fork's usage on the TASK dimension instead:
+                        # record_auxiliary_usage() writes only a
+                        # session_model_usage row, never a message and never the
+                        # sessions summary row, so persistence isolation holds.
+                        # This branch is an elif on the same _session_db test,
+                        # so a call can never be counted by both.
+                        try:
+                            _usage_db = getattr(agent, "_usage_db", None)
+                            _usage_sid = agent.session_id
+                            if _usage_db is None:
+                                # Fall back to the ambient aux-accounting
+                                # context when no explicit handle was pinned.
+                                from agent.aux_accounting import (
+                                    get_accounting_context,
+                                )
+                                _acct_ctx = get_accounting_context()
+                                if _acct_ctx is not None:
+                                    _usage_db, _usage_sid = _acct_ctx
+                            if _usage_db is not None and _usage_sid:
+                                _aux_cost = None
+                                if cost_result.amount_usd is not None:
+                                    _aux_cost = float(cost_result.amount_usd)
+                                if _moa_ref_cost is not None:
+                                    try:
+                                        _aux_cost = (
+                                            (_aux_cost or 0.0) + float(_moa_ref_cost)
+                                        )
+                                    except (TypeError, ValueError):  # pragma: no cover
+                                        pass
+                                _usage_db.record_auxiliary_usage(
+                                    _usage_sid,
+                                    str(agent._usage_task),
+                                    model=agent.model,
+                                    billing_provider=agent.provider,
+                                    billing_base_url=agent.base_url,
+                                    input_tokens=canonical_usage.input_tokens,
+                                    output_tokens=canonical_usage.output_tokens,
+                                    cache_read_tokens=canonical_usage.cache_read_tokens,
+                                    cache_write_tokens=canonical_usage.cache_write_tokens,
+                                    reasoning_tokens=canonical_usage.reasoning_tokens,
+                                    estimated_cost_usd=_aux_cost,
+                                )
+                        except Exception as e:
+                            # Best-effort, exactly like the branch above: a fork
+                            # must never die because accounting failed.
+                            logger.debug(
+                                "Fork usage accounting failed (session=%s, task=%s): %s",
+                                agent.session_id,
+                                getattr(agent, "_usage_task", ""),
+                                e,
+                            )
                     
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

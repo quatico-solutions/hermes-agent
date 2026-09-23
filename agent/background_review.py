@@ -771,6 +771,18 @@ def _run_review_in_thread(
             # and memory stores via its tools, which is all it needs.
             review_agent._persist_disabled = True
             review_agent._session_db = None
+            # ACCOUNTING, NOT PERSISTENCE: nulling _session_db above also
+            # silences the token/cost writer in conversation_loop.py (it is
+            # gated on the same handle), so every API call this fork makes is
+            # missing from session_model_usage and every cost report built on
+            # it undercounts. Keep the persistence isolation and hand the fork
+            # an accounting-only handle plus a task name: conversation_loop
+            # records the fork's main-loop usage via record_auxiliary_usage(),
+            # which writes ONLY a session_model_usage row (task dimension) and
+            # never a message nor the sessions summary row -- so the
+            # curator-takeover fix described above stays fully intact.
+            review_agent._usage_task = "background_review"
+            review_agent._usage_db = getattr(agent, "_session_db", None)
             review_agent._session_json_enabled = False
             # Suppress all status/warning emits from the fork so the
             # user only sees the final successful-action summary.
