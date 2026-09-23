@@ -339,3 +339,54 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# template + ledger fields (calls / tokens / cost)
+# ---------------------------------------------------------------------------
+
+
+def test_template_wraps_footer_per_platform():
+    cfg = {"display": {"runtime_footer": {"enabled": True, "fields": ["model", "context_pct"]},
+                       "platforms": {"slack": {"runtime_footer": {"template": "↳ _{footer}_"}}}}}
+    kw = dict(model="openai/gpt-5.4", context_tokens=50, context_length=100)
+    assert build_footer_line(user_config=cfg, platform_key="slack", **kw) == "↳ _gpt-5.4 · 50%_"
+    assert build_footer_line(user_config=cfg, platform_key="cli", **kw) == "gpt-5.4 · 50%"
+
+
+def test_template_without_placeholder_or_empty_line_is_ignored():
+    from gateway.runtime_footer import apply_footer_template
+    assert apply_footer_template("gpt-5.4", "no placeholder") == "gpt-5.4"
+    assert apply_footer_template("", "↳ _{footer}_") == ""
+    assert apply_footer_template("a{b}", "{x} {footer}") == "{x} a{b}"
+
+
+def _ledger_db(tmp_path, rows):
+    import sqlite3
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE session_model_usage (session_id TEXT, api_call_count INT, input_tokens INT,"
+                " cache_read_tokens INT, cache_write_tokens INT, output_tokens INT, estimated_cost_usd REAL)")
+    con.executemany("INSERT INTO session_model_usage VALUES (?,?,?,?,?,?,?)", rows)
+    con.commit()
+    con.close()
+    return str(db)
+
+
+def test_ledger_fields_sum_whole_session(tmp_path):
+    db = _ledger_db(tmp_path, [("s1", 3, 1000, 20000, 500, 800, 0.04),
+                               ("s1", 1, 200, 0, 0, 100, 0.01),   # e.g. background review
+                               ("s2", 9, 9, 9, 9, 9, 9.0)])       # other session: excluded
+    cfg = {"display": {"runtime_footer": {"enabled": True, "fields": ["calls", "tokens", "cost"]}}}
+    out = build_footer_line(user_config=cfg, platform_key="slack", model="m", context_tokens=0,
+                            context_length=None, session_id="s1", db_path=db)
+    assert out == "4 calls · 21.7k in / 900 out · ≥$0.05"
+
+
+def test_ledger_fields_skipped_without_data(tmp_path):
+    db = _ledger_db(tmp_path, [])
+    cfg = {"display": {"runtime_footer": {"enabled": True, "fields": ["model", "calls", "cost"]}}}
+    kw = dict(user_config=cfg, platform_key="slack", model="openai/gpt-5.4", context_tokens=0, context_length=None)
+    assert build_footer_line(session_id="s1", db_path=db, **kw) == "gpt-5.4"
+    assert build_footer_line(session_id=None, db_path=db, **kw) == "gpt-5.4"
+    assert build_footer_line(session_id="s1", db_path=str(tmp_path / "missing.db"), **kw) == "gpt-5.4"

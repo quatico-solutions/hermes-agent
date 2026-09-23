@@ -1626,6 +1626,7 @@ class GatewayTurnMixin:
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false)."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
+        from hermes_constants import get_hermes_home
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
@@ -1636,6 +1637,8 @@ class GatewayTurnMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                session_id=agent_result.get("session_id"),
+                db_path=str(get_hermes_home() / "state.db"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
