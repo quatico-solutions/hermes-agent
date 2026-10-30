@@ -114,11 +114,40 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    @pytest.mark.parametrize("text", [
+        "/plot-idea: new plugin release",
+        "/plot-idea, new plugin release",
+        "/plot-idea. new plugin release",
+        "/plot-idea; new plugin release",
+        "/plot-idea!",
+        "/plot-idea?",
+        "/plot-idea:",
+    ])
+    def test_trailing_punctuation_is_not_part_of_the_name(self, text):
+        event = MessageEvent(text=text)
+        assert event.get_command() == "plot-idea"
+
+    def test_trailing_punctuation_after_bot_suffix(self):
+        event = MessageEvent(text="/new@hermes_bot: please")
+        assert event.get_command() == "new"
+
+    def test_inner_punctuation_is_kept(self):
+        event = MessageEvent(text="/plot-idea:new")
+        assert event.get_command() == "plot-idea:new"
+
+    def test_punctuation_only_name_is_kept(self):
+        event = MessageEvent(text="/: hello")
+        assert event.get_command() == ":"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_args_after_trailing_punctuation(self):
+        event = MessageEvent(text="/plot-idea: new plugin release")
+        assert event.get_command_args() == "new plugin release"
 
 
 # ---------------------------------------------------------------------------
