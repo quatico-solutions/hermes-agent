@@ -4545,7 +4545,7 @@ class SlackAdapter(BasePlatformAdapter):
         # channel gate), so it gets the same in-progress/done reactions — the
         # only sign a human gets that an unmentioned follow-up was picked up.
         if (
-            is_one_to_one_dm or is_mentioned
+            (is_one_to_one_dm or is_mentioned)
             or (is_thread_reply and self._slack_thread_reply_reactions())
         ) and self._reactions_enabled():
             self._track_reacting_message(team_id, ts)
