@@ -195,6 +195,8 @@ class MessageEvent:
         if not self.is_command():
             return None
         raw = self._command_text().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        # Prose punctuation after the name ("/plot-idea: text") is not part of it
+        raw = raw.rstrip(":;,.!?") or raw
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 
